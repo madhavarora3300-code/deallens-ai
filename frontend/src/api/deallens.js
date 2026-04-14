@@ -1,9 +1,8 @@
-const API_BASE = import.meta.env.PROD 
-  ? "/v1"  // Production: same domain
-  : "http://localhost:8000/v1";  // Development
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 const request = async (endpoint, options = {}) => {
-  const response = await fetch(`${API_BASE}${endpoint}`, {
+  const url = `${API_BASE}${endpoint}`;
+  const response = await fetch(url, {
     headers: {
       'Content-Type': 'application/json',
       ...options.headers,
@@ -19,46 +18,49 @@ const request = async (endpoint, options = {}) => {
 };
 
 export const resolveEntity = (query, queryType = "auto") =>
-  request("/entity/resolve", { 
+  request("/v1/entity/resolve", { 
     method: "POST",
     body: JSON.stringify({ query, query_type: queryType }) 
   });
 
 export const getCompanyProfile = (companyId) =>
-  request(`/company/${companyId}`);
+  request(`/v1/company/${companyId}`);
 
 export const getEnrichmentStatus = (companyId) =>
-  request(`/company/${companyId}/enrichment-status`);
+  request(`/v1/company/${companyId}/enrichment-status`);
 
 export const checkDiscoveryEligibility = (companyId) =>
-  request(`/company/${companyId}/discovery-eligibility`);
+  request(`/v1/company/${companyId}/discovery-eligibility`);
+
+export const triggerEnrichment = (companyId) =>
+  request(`/v1/company/${companyId}/enrich`, { method: "POST" });
 
 export const runBuySideDiscovery = (payload) =>
-  request("/discovery/buy-side", { 
+  request("/v1/discovery/buy-side", { 
     method: "POST",
     body: JSON.stringify(payload) 
   });
 
 export const runSellSideDiscovery = (payload) =>
-  request("/discovery/sell-side", { 
+  request("/v1/discovery/sell-side", { 
     method: "POST",
     body: JSON.stringify(payload) 
   });
 
 export const predictRegulatory = (payload) =>
-  request("/regulatory/predict", { 
+  request("/v1/regulatory/predict", { 
     method: "POST",
     body: JSON.stringify(payload) 
   });
 
 export const generateDraft = (payload) =>
-  request("/drafts/generate", { 
+  request("/v1/drafts/generate", { 
     method: "POST",
     body: JSON.stringify(payload) 
   });
 
 export const getMarketFeed = (period = "daily", category = "all", limit = 50) =>
-  request(`/market-intelligence/feed?period=${period}&category=${category}&limit=${limit}`);
+  request(`/v1/market-intelligence/feed?period=${period}&category=${category}&limit=${limit}`);
 
 export const getCompanyNews = (companyId) =>
-  request(`/market-intelligence/company/${companyId}/news`);
+  request(`/v1/market-intelligence/company/${companyId}/news`);
