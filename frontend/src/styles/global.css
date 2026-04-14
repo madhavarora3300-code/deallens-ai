@@ -1,0 +1,118 @@
+/* DealLens AI — Design System */
+/* Dark terminal aesthetic: gold + teal accents on near-black */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  /* Backgrounds */
+  --dl-bg-primary: #0a0a0f;
+  --dl-bg-secondary: #111118;
+  --dl-bg-tertiary: #1a1a24;
+  --dl-bg-elevated: #20202e;
+
+  /* Borders */
+  --dl-border: #2a2a3d;
+  --dl-border-bright: #3d3d5c;
+
+  /* Brand colors */
+  --dl-gold: #f5c842;
+  --dl-teal: #00d4aa;
+  --dl-green: #22c55e;
+  --dl-amber: #f59e0b;
+  --dl-red: #ef4444;
+  --dl-blue: #3b82f6;
+  --dl-purple: #8b5cf6;
+
+  /* Text */
+  --dl-text-primary: #f0f0f0;
+  --dl-text-secondary: #a0a0b8;
+  --dl-text-muted: #606080;
+
+  /* Typography */
+  --dl-font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --dl-font-sans: 'Inter', system-ui, sans-serif;
+
+  /* Spacing */
+  --dl-radius: 6px;
+  --dl-radius-lg: 10px;
+}
+
+html, body {
+  height: 100%;
+  background-color: var(--dl-bg-primary);
+  color: var(--dl-text-primary);
+  font-family: var(--dl-font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Monospace utility */
+.mono {
+  font-family: var(--dl-font-mono);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--dl-bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--dl-border-bright);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--dl-text-muted);
+}
+
+/* Links */
+a {
+  color: var(--dl-teal);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid var(--dl-teal);
+  outline-offset: 2px;
+}
+
+/* Utility classes */
+.text-gold { color: var(--dl-gold); }
+.text-teal { color: var(--dl-teal); }
+.text-green { color: var(--dl-green); }
+.text-amber { color: var(--dl-amber); }
+.text-red { color: var(--dl-red); }
+.text-muted { color: var(--dl-text-muted); }
+.text-secondary { color: var(--dl-text-secondary); }
+
+.bg-elevated { background: var(--dl-bg-elevated); }
+.border-base { border: 1px solid var(--dl-border); }
+
+.card {
+  background: var(--dl-bg-elevated);
+  border: 1px solid var(--dl-border);
+  border-radius: var(--dl-radius-lg);
+  padding: 16px;
+}
