@@ -1,92 +1,64 @@
-const API = "/v1";
+const API_BASE = import.meta.env.PROD 
+  ? "/v1"  // Production: same domain
+  : "http://localhost:8000/v1";  // Development
 
-async function request(path, options = {}) {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...options.headers },
+const request = async (endpoint, options = {}) => {
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
     ...options,
   });
-  if (!res.ok) {
-    let error;
-    try {
-      error = await res.json();
-    } catch {
-      error = { message: `HTTP ${res.status}` };
-    }
-    throw Object.assign(new Error(error.message || `API error ${res.status}`), { status: res.status, body: error });
+  
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`);
   }
-  return res.json();
-}
+  
+  return response.json();
+};
 
-// Entity
-export const resolveEntity = (query, queryType = "auto", jurisdictionHint = null) =>
-  request(`${API}/entity/resolve`, {
+export const resolveEntity = (query, queryType = "auto") =>
+  request("/entity/resolve", { 
     method: "POST",
-    body: JSON.stringify({ query, query_type: queryType, jurisdiction_hint: jurisdictionHint }),
+    body: JSON.stringify({ query, query_type: queryType }) 
   });
 
-// Company
 export const getCompanyProfile = (companyId) =>
-  request(`${API}/company/${companyId}`);
+  request(`/company/${companyId}`);
 
 export const getEnrichmentStatus = (companyId) =>
-  request(`${API}/company/${companyId}/enrichment-status`);
+  request(`/company/${companyId}/enrichment-status`);
 
 export const checkDiscoveryEligibility = (companyId) =>
-  request(`${API}/company/${companyId}/discovery-eligibility`);
+  request(`/company/${companyId}/discovery-eligibility`);
 
-export const triggerEnrichment = (companyId) =>
-  request(`${API}/company/${companyId}/enrich`, { method: "POST" });
-
-// Discovery
 export const runBuySideDiscovery = (payload) =>
-  request(`${API}/discovery/buy-side`, {
+  request("/discovery/buy-side", { 
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify(payload) 
   });
 
 export const runSellSideDiscovery = (payload) =>
-  request(`${API}/discovery/sell-side`, {
+  request("/discovery/sell-side", { 
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify(payload) 
   });
 
-// Regulatory
 export const predictRegulatory = (payload) =>
-  request(`${API}/regulatory/predict`, {
+  request("/regulatory/predict", { 
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify(payload) 
   });
 
-// Drafts
 export const generateDraft = (payload) =>
-  request(`${API}/drafts/generate`, {
+  request("/drafts/generate", { 
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify(payload) 
   });
 
-// Market Intelligence
 export const getMarketFeed = (period = "daily", category = "all", limit = 50) =>
-  request(`${API}/market-intelligence/feed?period=${period}&category=${category}&limit=${limit}`);
+  request(`/market-intelligence/feed?period=${period}&category=${category}&limit=${limit}`);
 
 export const getCompanyNews = (companyId) =>
-  request(`${API}/market-intelligence/company/${companyId}/news`);
-
-export const triggerMarketFetch = () =>
-  request(`${API}/market-intelligence/fetch`, { method: "POST" });
-
-// Shortlists
-export const addToShortlist = (payload) =>
-  request(`${API}/shortlists`, { method: "POST", body: JSON.stringify(payload) });
-
-export const listShortlists = () =>
-  request(`${API}/shortlists`);
-
-export const getShortlist = (shortlistId) =>
-  request(`${API}/shortlists/${shortlistId}`);
-
-export const removeFromShortlist = (shortlistId, companyId) =>
-  request(`${API}/shortlists/${shortlistId}/company/${companyId}`, { method: "DELETE" });
-
-// Health
-export const healthCheck = () =>
-  request(`${API}/health`);
+  request(`/market-intelligence/company/${companyId}/news`);

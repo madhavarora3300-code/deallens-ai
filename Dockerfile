@@ -30,7 +30,9 @@ COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 RUN npm install -g serve
 
 # Expose ports
-EXPOSE 8080 3000
+EXPOSE 10000
 
-# Start both services
-CMD sh -c "cd backend && uvicorn main:app --host 0.0.0.0 --port 8080 & serve -s /app/frontend/dist -l 3000 & wait"
+# Start script
+RUN echo '#!/bin/sh\ncd /app/backend && uvicorn main:app --host 0.0.0.0 --port 10000' > /app/start.sh && chmod +x /app/start.sh
+
+CMD ["/app/start.sh"]
