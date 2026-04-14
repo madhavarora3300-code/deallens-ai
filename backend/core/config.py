@@ -1,15 +1,16 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
+from pydantic_settings import BaseSettings
+from typing import Optional
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-
-    database_url: str = "postgresql+asyncpg://deallens:deallens_secret@localhost:5432/deallens"
-    redis_url: str = "redis://localhost:6379/0"
-    openai_api_key: str = ""
-    environment: str = "development"
-    secret_key: str = "change-me-in-production"
-    edgar_user_agent: str = "DealLens AI contact@deallens-ai.com"
-
+    DATABASE_URL: str = "postgresql+asyncpg://localhost/deallens"
+    REDIS_URL: str = "redis://localhost:6379/0"
+    OPENAI_API_KEY: str
+    SECRET_KEY: str = "change-me-in-production"
+    ENVIRONMENT: str = "development"
+    EDGAR_USER_AGENT: str = "DealLens AI contact@deallens-ai.com"
+    
+    class Config:
+        env_file = ".env"
+        case_sensitive = True
 
 settings = Settings()
