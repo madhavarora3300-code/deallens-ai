@@ -198,6 +198,12 @@ export function SellSideDiscovery() {
             {loading
               ? [1, 2, 3].map(i => <SkeletonLoader key={i} height={280} borderRadius={10} />)
               : (results.buyers || []).map((b, i) => {
+                  const sb = b.score_breakdown || {};
+                  const snScore = sb.strategic_need_buyer_urgency ?? 0;
+                  const atpScore = sb.ability_to_pay ?? 0;
+                  const vtScore = sb.valuation_tension_potential ?? 0;
+                  const cocScore = sb.certainty_of_close ?? 0;
+
                   const normalized = {
                     ...b,
                     company_id: b.company_id || b.buyer_company_id,
@@ -206,10 +212,28 @@ export function SellSideDiscovery() {
                     jurisdiction: b.jurisdiction || b.buyer_jurisdiction,
                     rank: i + 1,
                     deal_score: b.deal_score ?? b.buyer_deal_score ?? 0,
-                    score_breakdown: b.score_breakdown || null,
+                    score_breakdown: sb,
                     score_rationale: b.score_rationale || null,
                     ib_metrics: b.ib_metrics || null,
                     investment_thesis: b.investment_thesis || (b.rationale ? [b.rationale] : []),
+                    // Derived display fields for BuyerCard summary row
+                    strategic_need: snScore >= 16 ? "Strong Strategic Pull"
+                      : snScore >= 10 ? "Moderate Strategic Pull"
+                      : snScore > 0 ? "Weak Strategic Pull"
+                      : null,
+                    ability_to_pay: atpScore > 0 ? {
+                      label: atpScore >= 12 ? "Strong Balance Sheet"
+                        : atpScore >= 8 ? "Moderate Capacity"
+                        : "Limited Capacity",
+                    } : null,
+                    valuation_tension: vtScore > 0 ? {
+                      level: vtScore >= 9 ? "High Potential"
+                        : vtScore >= 6 ? "Moderate"
+                        : "Low",
+                    } : null,
+                    close_certainty_pct: cocScore > 0
+                      ? Math.round((cocScore / 16) * 100)
+                      : null,
                   };
                   return <BuyerCard key={normalized.company_id || i} buyer={normalized} sellerCompanyId={sellerCompanyId} />;
                 })

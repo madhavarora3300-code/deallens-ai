@@ -284,26 +284,51 @@ Response format for NOT FOUND:
 
 
 async def _gpt_resolve(query: str, jurisdiction_hint: str | None) -> dict | None:
-    """Call GPT-4o-mini to resolve the company. Returns parsed dict or None."""
+    """
+    Resolve company using gpt-4o-mini-search-preview with live web search.
+    Falls back to plain gpt-4o-mini on error.
+    Returns parsed dict or None.
+    """
+    import json
     hint = f" (jurisdiction hint: {jurisdiction_hint})" if jurisdiction_hint else ""
     user_message = f"Resolve this company query: \"{query}\"{hint}"
+    full_prompt = f"{_RESOLVE_PROMPT}\n\n{user_message}"
 
     try:
-        response = await _get_client().chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": _RESOLVE_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=0.1,
-            max_tokens=600,
-            response_format={"type": "json_object"},
+        response = await _get_client().responses.create(
+            model="gpt-4o-mini-search-preview",
+            tools=[{"type": "web_search_preview"}],
+            input=full_prompt,
         )
-        raw = response.choices[0].message.content
-        import json
+        raw = ""
+        for block in response.output:
+            if hasattr(block, "content"):
+                for chunk in block.content:
+                    if hasattr(chunk, "text"):
+                        raw += chunk.text
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
         data = json.loads(raw)
     except Exception:
-        return None
+        # Fallback to plain chat completion
+        try:
+            fb = await _get_client().chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": _RESOLVE_PROMPT},
+                    {"role": "user", "content": user_message},
+                ],
+                temperature=0.1,
+                max_tokens=600,
+                response_format={"type": "json_object"},
+            )
+            data = json.loads(fb.choices[0].message.content)
+        except Exception:
+            return None
 
     resolution_type = data.get("resolution_type", "not_found")
 

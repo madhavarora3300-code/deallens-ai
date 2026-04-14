@@ -3,6 +3,7 @@ version: "3.9"
 services:
   postgres:
     image: postgres:15
+    restart: unless-stopped
     environment:
       POSTGRES_USER: deallens
       POSTGRES_PASSWORD: deallens_secret
@@ -19,6 +20,7 @@ services:
 
   redis:
     image: redis:7
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -31,6 +33,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    restart: unless-stopped
     ports:
       - "8001:8000"
     env_file: .env
@@ -49,6 +52,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    restart: unless-stopped
     env_file: .env
     depends_on:
       postgres:
@@ -65,6 +69,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    restart: unless-stopped
     env_file: .env
     depends_on:
       postgres:
@@ -81,6 +86,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    restart: unless-stopped
     ports:
       - "3001:3000"
     env_file: .env

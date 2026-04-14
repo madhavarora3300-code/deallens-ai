@@ -9,7 +9,6 @@ import { Drafts } from "./screens/Drafts.jsx";
 import { MarketIntelligence } from "./screens/MarketIntelligence.jsx";
 import { Shortlists } from "./screens/Shortlists.jsx";
 import { DeepAnalysis } from "./screens/DeepAnalysis.jsx";
-import { Contact } from "./screens/Contact.jsx";
 import { StatusBar } from "./components/StatusBar.jsx";
 import { SearchBar } from "./components/SearchBar.jsx";
 import { useCompanySearch } from "./hooks/useCompanySearch.js";
@@ -23,7 +22,6 @@ const NAV_ITEMS = [
   { to: "/drafts", label: "Drafts", sublabel: "AI workbench" },
   { to: "/market-intel", label: "Market Intel", sublabel: "Live signals" },
   { to: "/shortlists",   label: "Shortlists",   sublabel: "Saved companies" },
-  { to: "/contact",      label: "Contact",      sublabel: "Get in touch" },
 ];
 
 function GlobalSearch() {
@@ -125,7 +123,6 @@ export default function App() {
           <Route path="/market-intel" element={<MarketIntelligence />} />
           <Route path="/shortlists" element={<Shortlists />} />
           <Route path="/deep-analysis" element={<DeepAnalysis />} />
-          <Route path="/contact" element={<Contact />} />
         </Routes>
       </div>
 

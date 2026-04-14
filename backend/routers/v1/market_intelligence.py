@@ -33,12 +33,14 @@ async def get_feed(
     Updated every 6 hours via Celery beat.
     """
     # Time window for period
-    # Daily: filter by fetched_at (shows everything received in the last 24h regardless of pub date)
-    # Weekly/Monthly: filter by published_at (editorial recency)
+    # All periods filter by published_at so each tab shows a genuinely different slice.
+    # Daily: published in last 2 days (48h buffer covers timezone/scheduling gaps)
+    # Weekly: published in last 7 days
+    # Monthly: published in last 30 days
     now = datetime.now(timezone.utc)
     if period == "daily":
-        time_field = MarketNewsItem.fetched_at
-        period_start = now - timedelta(days=1)
+        time_field = MarketNewsItem.published_at
+        period_start = now - timedelta(days=2)
     elif period == "weekly":
         time_field = MarketNewsItem.published_at
         period_start = now - timedelta(days=7)

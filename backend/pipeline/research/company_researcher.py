@@ -1,10 +1,11 @@
 """
-Company Researcher — GPT-4o-mini powered company intelligence extraction.
+Company Researcher — GPT-4o-mini-search-preview powered company intelligence extraction.
 
 Two-pass design:
   Pass 1 (fast, ~3s): identity + basic financials + description → BASIC coverage
   Pass 2 (deep, ~8s): ownership + strategic features + M&A signals → DEEP coverage
 
+Uses gpt-4o-mini-search-preview for live web search — returns real-time data.
 All extracted data carries source attribution and confidence signals.
 """
 import json
@@ -14,6 +15,8 @@ from openai import AsyncOpenAI
 from core.config import settings
 
 _client: AsyncOpenAI | None = None
+
+_SEARCH_MODEL = "gpt-4o-mini-search-preview"
 
 
 def _get_client() -> AsyncOpenAI:
@@ -27,12 +30,13 @@ def _get_client() -> AsyncOpenAI:
 # Prompts
 # ---------------------------------------------------------------------------
 
-_BASIC_PROFILE_PROMPT = """You are an M&A intelligence analyst. Extract factual, publicly available information about the given company.
+_BASIC_PROFILE_PROMPT = """You are an M&A intelligence analyst. Use your web search capability to find the latest publicly available information about the given company.
 
+Search for the company's most recent annual report, investor relations page, and recent news before answering.
 Return ONLY valid JSON. No markdown. No explanation.
 Use null for any field you are not confident about. Never fabricate numbers.
-All financial figures in USD (convert if needed). Revenue/EBITDA = most recent fiscal year you have reliable data for.
-IMPORTANT: market_cap_usd and enterprise_value_usd should reflect the approximate figures from the most recent period in your training data — be conservative and note the year. Do NOT use current real-time prices.
+All financial figures in USD (convert if needed). Revenue/EBITDA = most recent fiscal year available from web search.
+market_cap_usd and enterprise_value_usd should reflect the most recent figures found via web search.
 
 Required JSON structure:
 {
@@ -65,16 +69,17 @@ Required JSON structure:
   "ev_ebitda_multiple": number or null,
   "revenue_growth_yoy": number or null,
   "data_confidence": integer,
-  "sources": ["openai_knowledge"]
+  "sources": ["web_search"]
 }
 
-financials_as_of_year: the fiscal year the financial figures relate to (e.g. 2023).
-data_confidence: 0-100. Deduct points for: private company (−20), old data (−10 per year stale), missing financials (−5 each), non-public jurisdiction (−10)."""
+financials_as_of_year: the fiscal year the financial figures relate to (e.g. 2024 or 2025).
+data_confidence: 0-100. Deduct points for: private company (−20), missing financials (−5 each), non-public jurisdiction (−10). Bonus +10 if you found data from the current year via web search."""
 
 
 _DEEP_PROFILE_PROMPT = """You are an M&A intelligence analyst specialising in ownership structures and strategic positioning.
 
-Given company context, extract ownership, strategic, and M&A signal information.
+Use your web search capability to find the latest news, filings, and announcements about this company before answering.
+Search for: recent earnings releases, ownership changes, strategic announcements, M&A activity, and activist investor news.
 Return ONLY valid JSON. No markdown. Use null for uncertain fields. Never fabricate.
 
 Required JSON structure:
@@ -163,19 +168,46 @@ async def research_company_deep(
 # ---------------------------------------------------------------------------
 
 async def _call_gpt(system_prompt: str, user_message: str, label: str) -> dict:
-    """Single GPT-4o-mini call. Returns parsed dict or {} on any error."""
+    """
+    Calls gpt-4o-mini-search-preview via the Responses API with live web search.
+    Falls back to chat.completions (no web search) on any error.
+    Returns parsed dict or {} on failure.
+    """
+    full_prompt = f"{system_prompt}\n\n{user_message}"
     try:
-        response = await _get_client().chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=0.1,
-            max_tokens=1200,
-            response_format={"type": "json_object"},
+        response = await _get_client().responses.create(
+            model=_SEARCH_MODEL,
+            tools=[{"type": "web_search_preview"}],
+            input=full_prompt,
         )
-        raw = response.choices[0].message.content
+        # Extract the text output from the response
+        raw = ""
+        for block in response.output:
+            if hasattr(block, "content"):
+                for chunk in block.content:
+                    if hasattr(chunk, "text"):
+                        raw += chunk.text
+        # Strip markdown fences if present
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
         return json.loads(raw)
     except Exception:
-        return {}
+        # Fallback: plain chat completion without web search
+        try:
+            fb = await _get_client().chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                temperature=0.1,
+                max_tokens=1200,
+                response_format={"type": "json_object"},
+            )
+            return json.loads(fb.choices[0].message.content)
+        except Exception:
+            return {}

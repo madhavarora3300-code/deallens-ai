@@ -597,24 +597,48 @@ async def _seed_candidates(
         )
 
     try:
-        response = await _get_openai().chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=0.25,
-            max_tokens=3000,
-            response_format={"type": "json_object"},
+        # Use web search model for live M&A intelligence
+        full_prompt = f"{system_msg}\n\n{user_msg}"
+        response = await _get_openai().responses.create(
+            model="gpt-4o-mini-search-preview",
+            tools=[{"type": "web_search_preview"}],
+            input=full_prompt,
         )
-        raw = response.choices[0].message.content
+        raw = ""
+        for block in response.output:
+            if hasattr(block, "content"):
+                for chunk in block.content:
+                    if hasattr(chunk, "text"):
+                        raw += chunk.text
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
         data = json.loads(raw)
         candidates = data.get("candidates", [])
         if not candidates and isinstance(data, dict):
-            # Fallback: look for any list value
             candidates = next((v for v in data.values() if isinstance(v, list)), [])
     except Exception:
-        return []
+        # Fallback to plain gpt-4o-mini without web search
+        try:
+            fb = await _get_openai().chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=0.25,
+                max_tokens=3000,
+                response_format={"type": "json_object"},
+            )
+            data = json.loads(fb.choices[0].message.content)
+            candidates = data.get("candidates", [])
+            if not candidates and isinstance(data, dict):
+                candidates = next((v for v in data.values() if isinstance(v, list)), [])
+        except Exception:
+            return []
 
     if not candidates:
         return []

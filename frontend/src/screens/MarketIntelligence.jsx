@@ -13,6 +13,22 @@ export function MarketIntelligence() {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState(null);
 
+  // Auto-fetch on first mount if feed has no items or last_updated is stale (>6h)
+  useEffect(() => {
+    getMarketFeed("daily", "all", 1).then((data) => {
+      const lastUpdated = data?.last_updated ? new Date(data.last_updated) : null;
+      const ageHours = lastUpdated ? (Date.now() - lastUpdated.getTime()) / 36e5 : Infinity;
+      if (!data?.items?.length || ageHours > 6) {
+        triggerMarketFetch().catch(() => {});
+        setRefreshMsg("Feed is stale — fetching latest data in the background. Reloading in ~45s.");
+        setTimeout(() => {
+          setRefreshMsg(null);
+          getMarketFeed(period, category, 50).then(setFeed).catch(console.error);
+        }, 45000);
+      }
+    }).catch(() => {});
+  }, []); // run once on mount
+
   useEffect(() => {
     setLoading(true);
     getMarketFeed(period, category, 50)
