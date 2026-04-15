@@ -17,12 +17,14 @@ const request = async (endpoint, options = {}) => {
   return response.json();
 };
 
+// Entity Resolution
 export const resolveEntity = (query, queryType = "auto") =>
   request("/v1/entity/resolve", { 
     method: "POST",
     body: JSON.stringify({ query, query_type: queryType }) 
   });
 
+// Company Profile
 export const getCompanyProfile = (companyId) =>
   request(`/v1/company/${companyId}`);
 
@@ -35,6 +37,7 @@ export const checkDiscoveryEligibility = (companyId) =>
 export const triggerEnrichment = (companyId) =>
   request(`/v1/company/${companyId}/enrich`, { method: "POST" });
 
+// Discovery
 export const runBuySideDiscovery = (payload) =>
   request("/v1/discovery/buy-side", { 
     method: "POST",
@@ -47,20 +50,44 @@ export const runSellSideDiscovery = (payload) =>
     body: JSON.stringify(payload) 
   });
 
+// Regulatory
 export const predictRegulatory = (payload) =>
   request("/v1/regulatory/predict", { 
     method: "POST",
     body: JSON.stringify(payload) 
   });
 
+// Drafts
 export const generateDraft = (payload) =>
   request("/v1/drafts/generate", { 
     method: "POST",
     body: JSON.stringify(payload) 
   });
 
+// Market Intelligence
 export const getMarketFeed = (period = "daily", category = "all", limit = 50) =>
   request(`/v1/market-intelligence/feed?period=${period}&category=${category}&limit=${limit}`);
 
 export const getCompanyNews = (companyId) =>
   request(`/v1/market-intelligence/company/${companyId}/news`);
+
+export const triggerMarketFetch = () =>
+  request("/v1/market-intelligence/fetch", { method: "POST" });
+
+// Shortlists
+export const getShortlists = () =>
+  request("/v1/shortlists");
+
+export const getShortlist = (shortlistId) =>
+  request(`/v1/shortlists/${shortlistId}`);
+
+export const addToShortlist = (payload) =>
+  request("/v1/shortlists", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+
+export const removeFromShortlist = (shortlistId, companyId) =>
+  request(`/v1/shortlists/${shortlistId}/company/${companyId}`, {
+    method: "DELETE"
+  });
