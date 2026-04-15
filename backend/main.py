@@ -45,7 +45,7 @@ async def health_check():
                 result = await db.execute(select(func.count()).select_from(Company))
                 companies_count = result.scalar() or 0
             except:
-                pass  # Table might not exist yet
+                pass
             
             # Get last news fetch
             try:
@@ -58,7 +58,7 @@ async def health_check():
                 if row:
                     last_news_fetch = row.isoformat()
             except:
-                pass  # Table might not exist yet
+                pass
                 
     except Exception as e:
         print(f"Database health check failed: {e}")
@@ -86,11 +86,11 @@ async def root():
 # Import routers
 from routers.v1 import entity, company, discovery, regulatory, drafts, market_intelligence, shortlists
 
-# Include routers
-app.include_router(entity.router, prefix="/v1", tags=["Entity"])
-app.include_router(company.router, prefix="/v1", tags=["Company"])
-app.include_router(discovery.router, prefix="/v1", tags=["Discovery"])
-app.include_router(regulatory.router, prefix="/v1", tags=["Regulatory"])
-app.include_router(drafts.router, prefix="/v1", tags=["Drafts"])
-app.include_router(market_intelligence.router, prefix="/v1", tags=["Market Intelligence"])
-app.include_router(shortlists.router, prefix="/v1", tags=["Shortlists"])
+# Include routers with proper prefixes
+app.include_router(entity.router, prefix="/v1/entity", tags=["Entity"])
+app.include_router(company.router, prefix="/v1/company", tags=["Company"])
+app.include_router(discovery.router, prefix="/v1/discovery", tags=["Discovery"])
+app.include_router(regulatory.router, prefix="/v1/regulatory", tags=["Regulatory"])
+app.include_router(drafts.router, prefix="/v1/drafts", tags=["Drafts"])
+app.include_router(market_intelligence.router, prefix="/v1/market-intelligence", tags=["Market Intelligence"])
+app.include_router(shortlists.router, prefix="/v1/shortlists", tags=["Shortlists"])
