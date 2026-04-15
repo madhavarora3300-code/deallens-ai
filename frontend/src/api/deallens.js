@@ -75,7 +75,7 @@ export const triggerMarketFetch = () =>
   request("/v1/market-intelligence/fetch", { method: "POST" });
 
 // Shortlists
-export const getShortlists = () =>
+export const listShortlists = () =>
   request("/v1/shortlists");
 
 export const getShortlist = (shortlistId) =>
