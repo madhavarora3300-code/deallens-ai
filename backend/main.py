@@ -1,10 +1,17 @@
+import logging
+import os
+import datetime
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, func, text
 from core.database import AsyncSessionLocal, engine, Base
 from models.database_models import Company, MarketNewsItem
-import os
-import datetime
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 app = FastAPI(title="DealLens AI", version="1.0")
 
