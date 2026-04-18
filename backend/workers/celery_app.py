@@ -22,4 +22,10 @@ celery_app.conf.update(
             "schedule": 21600.0,  # 6 hours in seconds
         },
     },
+    broker_connection_retry_on_startup=True,
+    broker_pool_limit=10,
+    broker_transport_options={
+        "socket_keepalive": True,
+        "health_check_interval": 30,
+    },
 )
