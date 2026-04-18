@@ -35,7 +35,14 @@ const PHASES = [
   { id: "score",  label: "Scoring & Ranking",            pct: 70, endPct: 98 },
 ];
 
-export function DiscoveryLoadingScreen({ mode = "buy_side", anchorName = "", strategyHint = "", anchorSector = "" }) {
+// statusPhase: "queued" | "running" | "scoring" — from the backend job status poll
+const STATUS_PHASE_LABEL = {
+  queued:  "Job queued — waiting for worker...",
+  running: "AI seeding candidates from global M&A landscape...",
+  scoring: "Scoring & ranking candidates...",
+};
+
+export function DiscoveryLoadingScreen({ mode = "buy_side", anchorName = "", strategyHint = "", anchorSector = "", statusPhase = "" }) {
   const [progress, setProgress] = useState(0);
   const [phase, setPhase] = useState(0);       // 0,1,2
   const [logLines, setLogLines] = useState([]);
@@ -343,9 +350,18 @@ export function DiscoveryLoadingScreen({ mode = "buy_side", anchorName = "", str
       </div>
 
       {/* Footer note */}
-      <div style={{ fontSize: 11, color: "var(--dl-text-muted)", borderTop: "1px solid var(--dl-border)", paddingTop: 12 }}>
-        AI is analysing global M&A landscape using GPT-4o-mini knowledge base. Results are strategy-specific and scored by the DealLens scoring engine.
-        This typically takes 60–120 seconds for a full discovery run.
+      <div style={{ fontSize: 11, color: "var(--dl-text-muted)", borderTop: "1px solid var(--dl-border)", paddingTop: 12, display: "flex", flexDirection: "column", gap: 4 }}>
+        {statusPhase && STATUS_PHASE_LABEL[statusPhase] && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--dl-teal)", fontFamily: "var(--dl-font-mono)", fontWeight: 600 }}>
+            <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%",
+              background: "var(--dl-teal)", animation: "pulse 1.2s infinite" }} />
+            {STATUS_PHASE_LABEL[statusPhase]}
+          </div>
+        )}
+        <div>
+          AI is analysing global M&A landscape using GPT-4o-mini knowledge base. Results are strategy-specific and scored by the DealLens scoring engine.
+          This typically takes 60–120 seconds for a full discovery run.
+        </div>
       </div>
 
       <style>{`

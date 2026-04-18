@@ -13,6 +13,7 @@ celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
+    result_expires=3600,  # keep results in Redis for 1 hour so frontend can poll
     timezone="UTC",
     enable_utc=True,
     beat_schedule={

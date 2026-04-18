@@ -2,18 +2,20 @@
 Discovery router — buy-side target discovery and sell-side buyer universe.
 
 Buy-side flow:
-  1. Load buyer profile from DB (must be enriched)
-  2. Load candidate targets from DB (all enriched companies except buyer)
-  3. Apply hard gates first (O(n), cheap)
-  4. Score survivors concurrently (asyncio.Semaphore to cap parallel GPT calls)
-  5. Generate GPT-4o-mini narrations for top 20 only
-  6. Return ranked and tiered results
+  1. HTTP endpoint queues a Celery task and returns job_id immediately
+  2. Celery task: seed relevant candidates via GPT (web search model)
+  3. Resolve + enrich each candidate in parallel (asyncio.Semaphore(6))
+  4. Apply hard gates (deterministic, no AI)
+  5. Score survivors concurrently via GPT-4o-mini
+  6. Generate narrations for top 15
+  7. Result stored in Redis via Celery result backend
+  8. Frontend polls GET /v1/discovery/job/{job_id} every 3s
 
-Sell-side flow:
-  Same as above but with sell-side scoring and process architecture classification.
+Sell-side flow: same pattern with sell-side scoring + process architecture.
 """
 import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -31,6 +33,8 @@ from pipeline.scoring.buy_side_scorer import score_target
 from pipeline.scoring.sell_side_scorer import score_buyer
 from pipeline.research.entity_resolver import _create_canonical_record
 from pipeline.research.enrichment_service import run_enrichment_pipeline
+
+logger = logging.getLogger(__name__)
 
 _openai_client: AsyncOpenAI | None = None
 
@@ -436,6 +440,7 @@ async def _seed_candidates(
     mode: str,
     limit: int = 20,
     strategy_hint: str = "",
+    session_factory=None,
 ) -> list[str]:
     """
     Ask GPT for relevant acquisition targets (buy-side) or potential buyers (sell-side).
@@ -620,7 +625,8 @@ async def _seed_candidates(
         candidates = data.get("candidates", [])
         if not candidates and isinstance(data, dict):
             candidates = next((v for v in data.values() if isinstance(v, list)), [])
-    except Exception:
+    except Exception as e:
+        logger.warning("SEED CANDIDATES: web-search GPT failed (%s), falling back to plain gpt-4o-mini", e)
         # Fallback to plain gpt-4o-mini without web search
         try:
             fb = await _get_openai().chat.completions.create(
@@ -637,7 +643,8 @@ async def _seed_candidates(
             candidates = data.get("candidates", [])
             if not candidates and isinstance(data, dict):
                 candidates = next((v for v in data.values() if isinstance(v, list)), [])
-        except Exception:
+        except Exception as e2:
+            logger.error("SEED CANDIDATES: both GPT attempts failed for mode=%s. Error: %s", mode, e2, exc_info=True)
             return []
 
     if not candidates:
@@ -661,13 +668,16 @@ async def _seed_candidates(
     seeded_ids: list[str] = []
     seed_sem = asyncio.Semaphore(6)  # cap concurrent enrichment calls
 
+    # Use provided session_factory (NullPool from Celery) or fall back to web-tier pool
+    _SessionFactory = session_factory if session_factory is not None else AsyncSessionLocal
+
     async def _resolve_and_enrich(c: dict) -> str | None:
         """Resolve + enrich one candidate. Each gets its own DB session."""
         if not c.get("legal_name"):
             return None
         async with seed_sem:
             try:
-                async with AsyncSessionLocal() as db:
+                async with _SessionFactory() as db:
                     # Check if already in DB (by ticker or name match)
                     ticker = c.get("ticker")
                     existing = None
@@ -694,7 +704,9 @@ async def _seed_candidates(
                         await run_enrichment_pipeline(company_id, db)
 
                     return company_id
-            except Exception:
+            except Exception as e:
+                logger.error("RESOLVE+ENRICH failed for candidate '%s': %s",
+                             c.get("legal_name"), e, exc_info=True)
                 return None
 
     # Run all candidates concurrently (up to semaphore limit)
@@ -715,48 +727,66 @@ async def _seed_candidates(
 
 
 # ---------------------------------------------------------------------------
-# Buy-side endpoint
+# Core pipeline functions (called by Celery tasks, not directly by HTTP handlers)
 # ---------------------------------------------------------------------------
 
-@router.post("/buy-side")
-async def run_buy_side_discovery(
-    request: BuySideRequest,
-    db: AsyncSession = Depends(get_db),
-):
+async def _run_buy_side_pipeline(payload: dict, session_factory=None) -> dict:
     """
-    Find ranked acquisition targets for a buyer company.
-    Applies hard gates, then scores survivors concurrently via GPT-4o-mini.
+    Full buy-side discovery: seed → enrich → gate → score → narrate.
+    Called from Celery task so no HTTP timeout applies.
+
+    session_factory: async_sessionmaker instance. When called from Celery, pass a
+    NullPool factory (created by make_task_session_factory()) to avoid asyncpg connection
+    reuse across destroyed event loops. Defaults to the web-tier AsyncSessionLocal.
     """
+    global _seeded_meta
+    _seeded_meta = {}  # Clear cross-run contamination at the start of every pipeline run
+    logger.info("_seeded_meta cleared for new buy-side run")
+
     t_start = datetime.now(timezone.utc)
+    buyer_company_id = payload["buyer_company_id"]
+    strategy_mode = payload.get("strategy_mode", "capability_bolt_on")
+    limit = payload.get("limit", 50)
+    filters_data = payload.get("filters", {})
+    filters = DiscoveryFilters(**filters_data)
 
-    buyer_profile = await _load_profile(request.buyer_company_id, db)
-    if not buyer_profile:
-        raise HTTPException(status_code=404, detail=f"Buyer '{request.buyer_company_id}' not found")
+    _SessionFactory = session_factory if session_factory is not None else AsyncSessionLocal
 
-    # Seed relevant target companies from GPT — returns IDs of seeded candidates only
-    seeded_ids = await _seed_candidates(
-        buyer_profile, "buy_side",
-        limit=max(request.limit, 20),
-        strategy_hint=request.strategy_mode,
-    )
+    logger.info("BUY-SIDE PIPELINE START | buyer=%s strategy=%s session_factory=%s",
+                buyer_company_id, strategy_mode,
+                "NullPool(task)" if session_factory is not None else "SharedPool(web)")
 
-    # Score only the freshly-seeded candidates (scoped to this run)
-    # If seeding failed entirely, fall back to all DB companies
-    candidates = await _load_all_enriched_profiles(
-        request.buyer_company_id, request.filters, db,
-        company_ids=seeded_ids if seeded_ids else None,
-    )
+    async with _SessionFactory() as db:
+        buyer_profile = await _load_profile(buyer_company_id, db)
+        if not buyer_profile:
+            return {"error": f"Buyer '{buyer_company_id}' not found"}
+
+        logger.info("Buyer loaded: %s (%s)", buyer_profile.get("display_name"), buyer_profile.get("sector"))
+
+        # Seed relevant target companies from GPT
+        seeded_ids = await _seed_candidates(
+            buyer_profile, "buy_side",
+            limit=max(limit, 20),
+            strategy_hint=strategy_mode,
+            session_factory=_SessionFactory,
+        )
+        logger.info("GPT seeded %d candidates for buyer %s", len(seeded_ids), buyer_company_id)
+
+        candidates = await _load_all_enriched_profiles(
+            buyer_company_id, filters, db,
+            company_ids=seeded_ids if seeded_ids else None,
+        )
+        logger.info("Loaded %d enriched candidate profiles", len(candidates))
 
     if not candidates:
-        return _empty_buy_side_response(
-            request.buyer_company_id, request.strategy_mode, t_start
-        )
+        logger.warning("No candidates after seeding+load for buyer %s", buyer_company_id)
+        return _empty_buy_side_response(buyer_company_id, strategy_mode, t_start)
 
     # Hard gate pass — O(n), no AI
     survivors = []
     excluded = []
     for target in candidates:
-        gate = _quick_gate_check(buyer_profile, target, request.strategy_mode)
+        gate = _quick_gate_check(buyer_profile, target, strategy_mode)
         if gate:
             excluded.append({
                 "target_company_id": target["company_id"],
@@ -766,21 +796,20 @@ async def run_buy_side_discovery(
         else:
             survivors.append(target)
 
+    logger.info("After hard gates: %d survivors, %d excluded", len(survivors), len(excluded))
+
     # Score survivors concurrently
     semaphore = asyncio.Semaphore(_SCORE_SEMAPHORE_LIMIT)
 
-    async def _score_one(target: dict, narrate: bool) -> dict:
+    async def _score_one(target: dict) -> dict:
         async with semaphore:
-            return await score_target(
-                buyer_profile, target, request.strategy_mode,
-                generate_narration=narrate
-            )
+            logger.info("Scoring target: %s", target.get("display_name"))
+            return await score_target(buyer_profile, target, strategy_mode, generate_narration=False)
 
-    # Score all survivors; narrate only top slice (decided after first sort)
-    scored_raw = await asyncio.gather(*[_score_one(t, False) for t in survivors])
-
-    # Sort by deal_score desc
+    scored_raw = list(await asyncio.gather(*[_score_one(t) for t in survivors]))
     scored_raw.sort(key=lambda x: x.get("deal_score", 0), reverse=True)
+
+    logger.info("Scored %d targets. Top score: %.1f", len(scored_raw), scored_raw[0].get("deal_score", 0) if scored_raw else 0)
 
     # Generate narrations for top N
     top_ids = {r["target_company_id"] for r in scored_raw[:_NARRATE_TOP_N]}
@@ -792,15 +821,12 @@ async def run_buy_side_discovery(
 
     async def _narrate(idx: int, target: dict):
         async with semaphore:
-            narrated = await score_target(
-                buyer_profile, target, request.strategy_mode,
-                generate_narration=True
-            )
+            narrated = await score_target(buyer_profile, target, strategy_mode, generate_narration=True)
             scored_raw[idx]["rationale"] = narrated.get("rationale", "")
 
     await asyncio.gather(*[_narrate(i, t) for i, t in narration_tasks])
 
-    # Inject seeded metadata (rationale_category, why_now, synergy estimate, non-obvious, precedents)
+    # Inject seeded metadata
     for r in scored_raw:
         cid = r.get("target_company_id")
         if cid and cid in _seeded_meta:
@@ -811,25 +837,24 @@ async def run_buy_side_discovery(
             r.setdefault("is_non_obvious", meta.get("is_non_obvious", False))
             r.setdefault("non_obvious_bridge", meta.get("non_obvious_bridge") or "")
             r.setdefault("precedent_deals", meta.get("precedent_deals") or "")
-            # Use seeded rationale as investment_thesis fallback if narration empty
             if not r.get("rationale") and meta.get("seeded_rationale"):
                 r["rationale"] = meta["seeded_rationale"]
 
-    # Apply min_deal_score filter and limit
-    min_score = request.filters.min_deal_score or 0
+    min_score = filters.min_deal_score or 0
     final = [r for r in scored_raw if r.get("deal_score", 0) >= min_score]
-    final = final[:request.limit]
+    final = final[:limit]
 
-    # Tier counts
     tier_counts = {"Tier 1": 0, "Tier 2": 0, "Tier 3": 0, "Excluded": 0}
     for r in scored_raw:
-        tier_counts[r.get("tier", "Tier 3")] = tier_counts.get(r.get("tier", "Tier 3"), 0) + 1
+        k = r.get("tier", "Tier 3")
+        tier_counts[k] = tier_counts.get(k, 0) + 1
 
     elapsed_ms = int((datetime.now(timezone.utc) - t_start).total_seconds() * 1000)
+    logger.info("BUY-SIDE PIPELINE DONE | buyer=%s results=%d elapsed=%dms", buyer_company_id, len(final), elapsed_ms)
 
     return {
-        "buyer_company_id": request.buyer_company_id,
-        "strategy_mode": request.strategy_mode,
+        "buyer_company_id": buyer_company_id,
+        "strategy_mode": strategy_mode,
         "summary": {
             "total_scanned": len(candidates),
             "total_gated": len(excluded),
@@ -846,45 +871,55 @@ async def run_buy_side_discovery(
     }
 
 
-# ---------------------------------------------------------------------------
-# Sell-side endpoint
-# ---------------------------------------------------------------------------
+async def _run_sell_side_pipeline(payload: dict, session_factory=None) -> dict:
+    """
+    Full sell-side discovery: seed → enrich → gate → score → narrate → process arch.
+    Called from Celery task so no HTTP timeout applies.
 
-@router.post("/sell-side")
-async def run_sell_side_discovery(
-    request: SellSideRequest,
-    db: AsyncSession = Depends(get_db),
-):
+    session_factory: NullPool factory from Celery tasks; defaults to web-tier AsyncSessionLocal.
     """
-    Find ranked buyer universe for a company as an M&A asset.
-    Returns buyers tiered and classified by process architecture role.
-    """
+    global _seeded_meta
+    _seeded_meta = {}  # Clear cross-run contamination at the start of every pipeline run
+    logger.info("_seeded_meta cleared for new sell-side run")
+
     t_start = datetime.now(timezone.utc)
+    seller_company_id = payload["seller_company_id"]
+    process_objective = payload.get("process_objective", "maximize_price")
+    limit = payload.get("limit", 25)
+    filters_data = payload.get("filters", {})
+    filters = DiscoveryFilters(**filters_data)
 
-    seller_profile = await _load_profile(request.seller_company_id, db)
-    if not seller_profile:
-        raise HTTPException(status_code=404, detail=f"Seller '{request.seller_company_id}' not found")
+    _SessionFactory = session_factory if session_factory is not None else AsyncSessionLocal
 
-    # Seed relevant buyer companies from GPT — returns IDs of seeded candidates only
-    seeded_ids = await _seed_candidates(
-        seller_profile, "sell_side",
-        limit=max(request.limit, 20),
-        strategy_hint=request.process_objective,
-    )
+    logger.info("SELL-SIDE PIPELINE START | seller=%s objective=%s session_factory=%s",
+                seller_company_id, process_objective,
+                "NullPool(task)" if session_factory is not None else "SharedPool(web)")
 
-    # Score only the freshly-seeded candidates (scoped to this run)
-    # If seeding failed entirely, fall back to all DB companies
-    candidates = await _load_all_enriched_profiles(
-        request.seller_company_id, request.filters, db,
-        company_ids=seeded_ids if seeded_ids else None,
-    )
+    async with _SessionFactory() as db:
+        seller_profile = await _load_profile(seller_company_id, db)
+        if not seller_profile:
+            return {"error": f"Seller '{seller_company_id}' not found"}
+
+        logger.info("Seller loaded: %s (%s)", seller_profile.get("display_name"), seller_profile.get("sector"))
+
+        seeded_ids = await _seed_candidates(
+            seller_profile, "sell_side",
+            limit=max(limit, 20),
+            strategy_hint=process_objective,
+            session_factory=_SessionFactory,
+        )
+        logger.info("GPT seeded %d buyer candidates for seller %s", len(seeded_ids), seller_company_id)
+
+        candidates = await _load_all_enriched_profiles(
+            seller_company_id, filters, db,
+            company_ids=seeded_ids if seeded_ids else None,
+        )
+        logger.info("Loaded %d enriched buyer profiles", len(candidates))
 
     if not candidates:
-        return _empty_sell_side_response(
-            request.seller_company_id, request.process_objective, t_start
-        )
+        logger.warning("No candidates after seeding+load for seller %s", seller_company_id)
+        return _empty_sell_side_response(seller_company_id, process_objective, t_start)
 
-    # Hard gate pass
     survivors = []
     excluded = []
     for buyer in candidates:
@@ -898,17 +933,19 @@ async def run_sell_side_discovery(
         else:
             survivors.append(buyer)
 
+    logger.info("After hard gates: %d survivors, %d excluded", len(survivors), len(excluded))
+
     semaphore = asyncio.Semaphore(_SCORE_SEMAPHORE_LIMIT)
 
-    async def _score_one(buyer: dict, narrate: bool) -> dict:
+    async def _score_one(buyer: dict) -> dict:
         async with semaphore:
-            return await score_buyer(
-                seller_profile, buyer, request.process_objective,
-                generate_narration=narrate
-            )
+            logger.info("Scoring buyer: %s", buyer.get("display_name"))
+            return await score_buyer(seller_profile, buyer, process_objective, generate_narration=False)
 
-    scored_raw = await asyncio.gather(*[_score_one(b, False) for b in survivors])
+    scored_raw = list(await asyncio.gather(*[_score_one(b) for b in survivors]))
     scored_raw.sort(key=lambda x: x.get("deal_score", 0), reverse=True)
+
+    logger.info("Scored %d buyers. Top score: %.1f", len(scored_raw), scored_raw[0].get("deal_score", 0) if scored_raw else 0)
 
     top_ids = {r["buyer_company_id"] for r in scored_raw[:_NARRATE_TOP_N]}
     narration_tasks = []
@@ -919,15 +956,11 @@ async def run_sell_side_discovery(
 
     async def _narrate(idx: int, buyer: dict):
         async with semaphore:
-            narrated = await score_buyer(
-                seller_profile, buyer, request.process_objective,
-                generate_narration=True
-            )
+            narrated = await score_buyer(seller_profile, buyer, process_objective, generate_narration=True)
             scored_raw[idx]["rationale"] = narrated.get("rationale", "")
 
     await asyncio.gather(*[_narrate(i, b) for i, b in narration_tasks])
 
-    # Inject seeded metadata into sell-side results
     for r in scored_raw:
         cid = r.get("buyer_company_id")
         if cid and cid in _seeded_meta:
@@ -941,18 +974,13 @@ async def run_sell_side_discovery(
             if not r.get("rationale") and meta.get("seeded_rationale"):
                 r["rationale"] = meta["seeded_rationale"]
 
-    min_score = request.filters.min_deal_score or 0
+    min_score = filters.min_deal_score or 0
     final = [r for r in scored_raw if r.get("deal_score", 0) >= min_score]
-    final = final[:request.limit]
+    final = final[:limit]
 
-    # Build process architecture map
     process_arch: dict[str, list[str]] = {
-        "must_contact_strategic": [],
-        "price_anchors": [],
-        "certainty_anchors": [],
-        "tension_creators": [],
-        "sponsor_floor": [],
-        "do_not_approach": [],
+        "must_contact_strategic": [], "price_anchors": [], "certainty_anchors": [],
+        "tension_creators": [], "sponsor_floor": [], "do_not_approach": [],
     }
     role_map = {
         "must_contact_strategic": "must_contact_strategic",
@@ -969,21 +997,22 @@ async def run_sell_side_discovery(
         process_arch[key].append(name)
 
     elapsed_ms = int((datetime.now(timezone.utc) - t_start).total_seconds() * 1000)
+    logger.info("SELL-SIDE PIPELINE DONE | seller=%s results=%d elapsed=%dms", seller_company_id, len(final), elapsed_ms)
 
-    ev_usd = seller_profile.get("enterprise_value_usd") or 0
+    ev_usd = seller_profile.get("financials", {}).get("enterprise_value_usd") or 0
     ev_b = round(ev_usd / 1e9, 1) if ev_usd else None
 
     return {
         "seller_name": seller_profile.get("display_name") or seller_profile.get("legal_name"),
-        "seller_company_id": request.seller_company_id,
+        "seller_company_id": seller_company_id,
         "seller_context": {
             "enterprise_value_usd_b": ev_b,
-            "process_objective": request.process_objective,
+            "process_objective": process_objective,
             "target_valuation_range_low_b": round(ev_b * 0.9, 1) if ev_b else None,
             "target_valuation_range_high_b": round(ev_b * 1.1, 1) if ev_b else None,
             "process_stage": "Discovery Phase",
         },
-        "process_objective": request.process_objective,
+        "process_objective": process_objective,
         "summary": {
             "total_scanned": len(candidates),
             "total_gated": len(excluded),
@@ -998,6 +1027,103 @@ async def run_sell_side_discovery(
         "computation_time_ms": elapsed_ms,
         "generated_at": t_start.isoformat(),
     }
+
+
+# ---------------------------------------------------------------------------
+# HTTP endpoints — queue task + return job_id immediately
+# ---------------------------------------------------------------------------
+
+@router.post("/buy-side")
+async def run_buy_side_discovery(
+    request: BuySideRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Queues the buy-side discovery pipeline as a Celery background task.
+    Returns job_id immediately. Poll GET /v1/discovery/job/{job_id} for results.
+    """
+    # Verify buyer exists before queuing
+    buyer_profile = await _load_profile(request.buyer_company_id, db)
+    if not buyer_profile:
+        raise HTTPException(status_code=404, detail=f"Buyer '{request.buyer_company_id}' not found")
+
+    payload = {
+        "buyer_company_id": request.buyer_company_id,
+        "strategy_mode": request.strategy_mode,
+        "filters": request.filters.model_dump(),
+        "limit": request.limit,
+    }
+
+    from workers.tasks import run_buy_side_discovery as _celery_task
+    task = _celery_task.delay(payload)
+    logger.info("Queued buy-side discovery job %s for buyer %s", task.id, request.buyer_company_id)
+
+    return {
+        "job_id": task.id,
+        "status": "queued",
+        "buyer_company_id": request.buyer_company_id,
+        "strategy_mode": request.strategy_mode,
+        "message": "Discovery pipeline queued. Poll /v1/discovery/job/{job_id} every 3s for results.",
+    }
+
+
+@router.post("/sell-side")
+async def run_sell_side_discovery(
+    request: SellSideRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Queues the sell-side discovery pipeline as a Celery background task.
+    Returns job_id immediately. Poll GET /v1/discovery/job/{job_id} for results.
+    """
+    seller_profile = await _load_profile(request.seller_company_id, db)
+    if not seller_profile:
+        raise HTTPException(status_code=404, detail=f"Seller '{request.seller_company_id}' not found")
+
+    payload = {
+        "seller_company_id": request.seller_company_id,
+        "process_objective": request.process_objective,
+        "filters": request.filters.model_dump(),
+        "limit": request.limit,
+    }
+
+    from workers.tasks import run_sell_side_discovery as _celery_task
+    task = _celery_task.delay(payload)
+    logger.info("Queued sell-side discovery job %s for seller %s", task.id, request.seller_company_id)
+
+    return {
+        "job_id": task.id,
+        "status": "queued",
+        "seller_company_id": request.seller_company_id,
+        "process_objective": request.process_objective,
+        "message": "Discovery pipeline queued. Poll /v1/discovery/job/{job_id} every 3s for results.",
+    }
+
+
+@router.get("/job/{job_id}")
+async def get_discovery_job_status(job_id: str):
+    """
+    Poll this endpoint every 3s after starting a discovery run.
+    Returns {"status": "queued"|"running"|"complete"|"failed", "result": {...}}
+    """
+    from celery.result import AsyncResult
+    from workers.celery_app import celery_app
+
+    task = AsyncResult(job_id, app=celery_app)
+    state = task.state  # PENDING, STARTED, SUCCESS, FAILURE, RETRY
+
+    if state == "SUCCESS":
+        result = task.result
+        if isinstance(result, dict) and "error" in result:
+            return {"status": "failed", "error": result["error"]}
+        return {"status": "complete", "result": result}
+    elif state == "FAILURE":
+        return {"status": "failed", "error": str(task.result)}
+    elif state in ("STARTED", "RETRY"):
+        return {"status": "running"}
+    else:
+        # PENDING = queued or unknown
+        return {"status": "queued"}
 
 
 # ---------------------------------------------------------------------------

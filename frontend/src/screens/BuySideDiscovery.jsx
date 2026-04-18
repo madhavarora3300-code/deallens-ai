@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import { runBuySideDiscovery } from "../api/deallens.js";
+import { startBuySideDiscovery, getDiscoveryJobStatus } from "../api/deallens.js";
 import { TargetCard } from "../components/TargetCard.jsx";
 import { SkeletonLoader } from "../components/SkeletonLoader.jsx";
 import { DiscoveryLoadingScreen } from "../components/DiscoveryLoadingScreen.jsx";
@@ -66,7 +66,9 @@ export function BuySideDiscovery() {
 
   const [results, setResults]   = useState(cached?.results || null);
   const [loading, setLoading]   = useState(false);
+  const [loadingPhase, setLoadingPhase] = useState(""); // "queued" | "running" | "scoring"
   const [error, setError]       = useState(null);
+  const pollRef = useRef(null);
   const [activeTier, setActiveTier] = useState("Tier 1");
   const [viewMode, setViewMode] = useState("tier"); // "tier" | "rationale"
   const [strategyMode, setStrategyMode] = useState(cached?.strategyMode || "capability_bolt_on");
@@ -115,35 +117,66 @@ export function BuySideDiscovery() {
     fMaxLeverage, fDealStructures.length, fSectorFocus !== "any" ? 1 : 0,
   ].filter(Boolean).length;
 
+  const stopPoll = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  };
+
+  // Clean up poll on unmount
+  useEffect(() => () => stopPoll(), []);
+
   const runDiscovery = async () => {
     if (!buyerCompanyId) return;
+    stopPoll();
     setLoading(true);
+    setLoadingPhase("queued");
     setError(null);
     setResults(null);
     try {
-      const data = await runBuySideDiscovery({
+      // Step 1: queue the job — returns immediately with job_id
+      const { job_id } = await startBuySideDiscovery({
         buyer_company_id: buyerCompanyId,
         strategy_mode: strategyMode,
         filters: buildFilters(),
         limit: 50,
       });
-      setResults(data);
-      // Extract buyer context from first result if available
-      const first = data?.targets?.[0];
-      const jx   = first?.buyer_jurisdiction || "";
-      const name  = first?.buyer_display_name || first?.buyer_legal_name || "";
-      const sector = first?.buyer_sector || "";
-      if (first) {
-        setBuyerJurisdiction(jx);
-        setBuyerName(name);
-        setBuyerSector(sector);
-      }
-      // Persist results so they survive navigation / screen lock
-      saveToCache(buyerCompanyId, { results: data, strategyMode, buyerJurisdiction: jx, buyerName: name, buyerSector: sector });
+
+      // Step 2: poll every 3s until complete
+      setLoadingPhase("running");
+      pollRef.current = setInterval(async () => {
+        try {
+          const status = await getDiscoveryJobStatus(job_id);
+          if (status.status === "complete") {
+            stopPoll();
+            const data = status.result;
+            setResults(data);
+            setLoading(false);
+            setLoadingPhase("");
+            const first = data?.targets?.[0];
+            const jx   = first?.buyer_jurisdiction || "";
+            const name  = first?.buyer_display_name || first?.buyer_legal_name || "";
+            const sector = first?.buyer_sector || "";
+            if (jx) setBuyerJurisdiction(jx);
+            if (name) setBuyerName(name);
+            if (sector) setBuyerSector(sector);
+            saveToCache(buyerCompanyId, { results: data, strategyMode, buyerJurisdiction: jx, buyerName: name, buyerSector: sector });
+          } else if (status.status === "failed") {
+            stopPoll();
+            setError(status.error || "Discovery failed");
+            setLoading(false);
+            setLoadingPhase("");
+          } else if (status.status === "running") {
+            setLoadingPhase("scoring");
+          }
+          // "queued" → keep polling
+        } catch (pollErr) {
+          // Network blip — keep polling, don't abort
+        }
+      }, 3000);
     } catch (e) {
+      stopPoll();
       setError(e.message);
-    } finally {
       setLoading(false);
+      setLoadingPhase("");
     }
   };
 
@@ -388,6 +421,7 @@ export function BuySideDiscovery() {
           anchorName={buyerName}
           strategyHint={strategyMode}
           anchorSector={buyerSector}
+          statusPhase={loadingPhase}
         />
       )}
 

@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { runSellSideDiscovery } from "../api/deallens.js";
+import { startSellSideDiscovery, getDiscoveryJobStatus } from "../api/deallens.js";
 import { BuyerCard } from "../components/BuyerCard.jsx";
 import { SkeletonLoader } from "../components/SkeletonLoader.jsx";
 import { DiscoveryLoadingScreen } from "../components/DiscoveryLoadingScreen.jsx";
@@ -42,32 +42,64 @@ export function SellSideDiscovery() {
 
   const [results, setResults] = useState(cached?.results || null);
   const [loading, setLoading] = useState(false);
+  const [loadingPhase, setLoadingPhase] = useState("");
   const [error, setError] = useState(null);
   const [objective, setObjective] = useState(cached?.objective || "maximize_price");
   const [sellerName, setSellerName] = useState(cached?.sellerName || "");
   const [sellerSector, setSellerSector] = useState("");
+  const pollRef = useRef(null);
+
+  const stopPoll = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  };
+
+  useEffect(() => () => stopPoll(), []);
 
   const runDiscovery = async () => {
     if (!sellerCompanyId) return;
+    stopPoll();
     setLoading(true);
+    setLoadingPhase("queued");
     setError(null);
     setResults(null);
     try {
-      const data = await runSellSideDiscovery({
+      const { job_id } = await startSellSideDiscovery({
         seller_company_id: sellerCompanyId,
         process_objective: objective,
         filters: {},
         limit: 25,
       });
-      setResults(data);
-      const name = data?.seller_name || "";
-      if (name) setSellerName(name);
-      // Persist so results survive navigation / screen lock
-      saveSellCache(sellerCompanyId, { results: data, objective, sellerName: name });
+
+      setLoadingPhase("running");
+      pollRef.current = setInterval(async () => {
+        try {
+          const status = await getDiscoveryJobStatus(job_id);
+          if (status.status === "complete") {
+            stopPoll();
+            const data = status.result;
+            setResults(data);
+            setLoading(false);
+            setLoadingPhase("");
+            const name = data?.seller_name || "";
+            if (name) setSellerName(name);
+            saveSellCache(sellerCompanyId, { results: data, objective, sellerName: name });
+          } else if (status.status === "failed") {
+            stopPoll();
+            setError(status.error || "Discovery failed");
+            setLoading(false);
+            setLoadingPhase("");
+          } else if (status.status === "running") {
+            setLoadingPhase("scoring");
+          }
+        } catch (_) {
+          // Network blip — keep polling
+        }
+      }, 3000);
     } catch (e) {
+      stopPoll();
       setError(e.message);
-    } finally {
       setLoading(false);
+      setLoadingPhase("");
     }
   };
 
@@ -118,6 +150,7 @@ export function SellSideDiscovery() {
           anchorName={sellerName}
           strategyHint={objective}
           anchorSector={sellerSector}
+          statusPhase={loadingPhase}
         />
       )}
 

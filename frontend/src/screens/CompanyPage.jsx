@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getCompanyProfile, checkDiscoveryEligibility, triggerEnrichment } from "../api/deallens.js";
+import { getCompanyProfile, checkDiscoveryEligibility, getEnrichmentStatus, triggerEnrichment } from "../api/deallens.js";
 import { CompanyHeader } from "../components/CompanyHeader.jsx";
 import { CoverageBadge } from "../components/CoverageBadge.jsx";
 import { FreshnessBadge } from "../components/FreshnessBadge.jsx";
@@ -34,37 +34,73 @@ export function CompanyPage() {
   const cpCached = companyId ? loadCpCache(companyId) : null;
   const [profile, setProfile] = useState(cpCached?.profile || null);
   const [eligibility, setEligibility] = useState(cpCached?.eligibility || null);
-  const [loading, setLoading] = useState(!cpCached); // skip loading flash if we have cache
+  const [loading, setLoading] = useState(!cpCached);
+  const [enriching, setEnriching] = useState(false);
+  const [enrichProgress, setEnrichProgress] = useState(0);
+  const pollRef = useRef(null);
   const { progress, steps, log, streaming, complete, startStream } = useEnrichmentStream();
 
+  const fetchProfile = async (id) => {
+    const [p, e] = await Promise.all([
+      getCompanyProfile(id),
+      checkDiscoveryEligibility(id),
+    ]);
+    setProfile(p);
+    setEligibility(e);
+    saveCpCache(id, p, e);
+    return p;
+  };
+
+  const startPolling = (id) => {
+    if (pollRef.current) return; // already polling
+    pollRef.current = setInterval(async () => {
+      try {
+        const status = await getEnrichmentStatus(id);
+        setEnrichProgress(status.overall_progress_pct || 0);
+        const depth = status.coverage_depth;
+        if (depth && depth !== "NONE") {
+          // Enrichment has progressed — re-fetch full profile
+          await fetchProfile(id);
+          if (depth === "DEEP" || status.freshness_status === "FRESH") {
+            stopPolling();
+            setEnriching(false);
+          }
+        }
+      } catch (_) {}
+    }, 5000);
+  };
+
+  const stopPolling = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+
   useEffect(() => {
-    // Always re-fetch in background to get fresh data; show cached immediately
     if (!cpCached) setLoading(true);
-    Promise.all([
-      getCompanyProfile(companyId),
-      checkDiscoveryEligibility(companyId),
-    ]).then(([p, e]) => {
-      setProfile(p);
-      setEligibility(e);
-      saveCpCache(companyId, p, e);
-      if (p?.portal_state?.enrichment_status !== "COMPLETE") {
+    fetchProfile(companyId).then((p) => {
+      const depth = p?.portal_state?.coverage_depth;
+      const isComplete = p?.portal_state?.enrichment_status === "COMPLETE" || depth === "DEEP";
+      if (!isComplete) {
+        setEnriching(true);
+        triggerEnrichment(companyId).catch(() => {});
+        // Try WebSocket first; polling is the reliable fallback
         startStream(companyId);
-        triggerEnrichment(companyId).catch(() => {}); // fire and forget
+        startPolling(companyId);
       }
     }).catch(console.error)
       .finally(() => setLoading(false));
+
+    return () => stopPolling();
   }, [companyId]);
 
-  // Re-fetch profile after enrichment stream completes so UI shows fresh data
+  // When WebSocket enrichment_complete fires, re-fetch and stop polling
   useEffect(() => {
     if (!complete) return;
-    Promise.all([
-      getCompanyProfile(companyId),
-      checkDiscoveryEligibility(companyId),
-    ]).then(([p, e]) => {
-      setProfile(p);
-      setEligibility(e);
-      saveCpCache(companyId, p, e);
+    fetchProfile(companyId).then(() => {
+      stopPolling();
+      setEnriching(false);
     }).catch(() => {});
   }, [complete, companyId]);
 
@@ -103,15 +139,38 @@ export function CompanyPage() {
       <CompanyHeader company={identity} />
 
       {/* Badges row */}
-      <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
         <CoverageBadge depth={portal_state.coverage_depth} />
         <FreshnessBadge status={portal_state.freshness_status} />
         <ConfidenceBadge score={portal_state.confidence_score || 0} />
+        {enriching && (
+          <span style={{
+            fontSize: 11, fontWeight: 700, letterSpacing: 1, padding: "3px 10px",
+            borderRadius: 4, background: "rgba(0,212,170,0.08)",
+            border: "1px solid rgba(0,212,170,0.3)", color: "var(--dl-teal)",
+            fontFamily: "var(--dl-font-mono)", display: "flex", alignItems: "center", gap: 6,
+          }}>
+            <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%",
+              background: "var(--dl-teal)", animation: "pulse 1.2s infinite" }} />
+            ENRICHING
+          </span>
+        )}
       </div>
 
       {/* Enrichment pipeline — shown at top when in progress */}
-      {!complete && (streaming || portal_state.enrichment_status !== "COMPLETE") && (
-        <EnrichmentPipeline progress={progress} steps={steps} log={log} />
+      {enriching && (
+        <EnrichmentPipeline
+          progress={streaming ? progress : enrichProgress}
+          steps={steps}
+          log={log.length > 0 ? log : enrichProgress > 0 ? [`Enrichment in progress… ${enrichProgress}% complete — page will update automatically`] : ["Starting enrichment pipeline… page will update automatically when data is ready"]}
+        />
+      )}
+
+      {/* Skeleton rows when enriching with no data yet */}
+      {enriching && !financials.revenue_usd && (
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          {[1,2,3,4,5,6].map(i => <SkeletonLoader key={i} height={80} style={{ flex: 1, minWidth: 100 }} />)}
+        </div>
       )}
 
       {/* Source transparency */}

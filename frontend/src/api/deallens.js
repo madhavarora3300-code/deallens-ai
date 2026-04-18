@@ -38,17 +38,24 @@ export const triggerEnrichment = (companyId) =>
   request(`/v1/company/${companyId}/enrich`, { method: "POST" });
 
 // Discovery
-export const runBuySideDiscovery = (payload) =>
-  request("/v1/discovery/buy-side", { 
+export const startBuySideDiscovery = (payload) =>
+  request("/v1/discovery/buy-side", {
     method: "POST",
-    body: JSON.stringify(payload) 
+    body: JSON.stringify(payload),
   });
 
-export const runSellSideDiscovery = (payload) =>
-  request("/v1/discovery/sell-side", { 
+export const startSellSideDiscovery = (payload) =>
+  request("/v1/discovery/sell-side", {
     method: "POST",
-    body: JSON.stringify(payload) 
+    body: JSON.stringify(payload),
   });
+
+export const getDiscoveryJobStatus = (jobId) =>
+  request(`/v1/discovery/job/${jobId}`);
+
+// Keep old names as aliases for any code still using them
+export const runBuySideDiscovery = startBuySideDiscovery;
+export const runSellSideDiscovery = startSellSideDiscovery;
 
 // Regulatory
 export const predictRegulatory = (payload) =>

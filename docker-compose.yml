@@ -54,6 +54,8 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     env_file: .env
+    environment:
+      - PYTHONPATH=/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -71,6 +73,8 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     env_file: .env
+    environment:
+      - PYTHONPATH=/app
     depends_on:
       postgres:
         condition: service_healthy
